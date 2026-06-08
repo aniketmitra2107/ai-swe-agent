@@ -1,0 +1,3 @@
+PyGithub
+langchain-core
+python-dotenv
