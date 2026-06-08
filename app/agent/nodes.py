@@ -26,7 +26,9 @@ def planner_node(state: AgentState):
         content=(
             "You are an AI software architect. Use you tools to fetch the specified Github issue."
             "Based on the issue description, determine which file needs to be modified and fetch its content. "
-            "Do not write the final code fix. Your only job is to gather the necessary context into the conversation history. "
+            "Do not write the final code fix."
+            "CRITICAL: Once you have successfully fetched both the issue and the file content, you MUST STOP calling tools."
+            "Simply output the exact text 'Context successfully gathered. Passing to coder.' to end your turn."
         )
     )
     response = planner_llm.invoke([system_prompt]+messages)
