@@ -1,3 +1,7 @@
 PyGithub
 langchain-core
 python-dotenv
+langgraph
+langchain-google-genai
+fastapi
+uvicorn
