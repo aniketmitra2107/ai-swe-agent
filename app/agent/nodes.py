@@ -14,7 +14,8 @@ load_dotenv()
 llm = ChatOllama(
     model="qwen2.5-coder:7b",
     temperature=0,
-    num_ctx=16384
+    num_ctx=16384,
+    base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
 )
 
 planner_llm = llm.bind_tools([get_github_issue, get_file_content, list_github_directory])
