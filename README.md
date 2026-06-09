@@ -151,47 +151,6 @@ export GITHUB_ACCESS_TOKEN="ghp_your_token_here"
 python tests/test_graph.py
 ```
   
-
-📂 Project Structure
-
-  
-
-ai-swe-agent/
-
-├── app/
-
-│ ├── agent/
-
-│ │ ├── __init__.py
-
-│ │ ├── graph.py # LangGraph routing and compilation
-
-│ │ ├── nodes.py # Planner, Coder, and PR node logic
-
-│ │ ├── state.py # AgentState definition
-
-│ │ └── tools.py # PyGithub tools (issue fetcher, dir traversal)
-
-│ └── main.py
-
-├── tests/
-
-│ └── test_graph.py # Entry point to trigger the graph
-
-├── docker-compose.yml # Orchestration for container and host Ollama
-
-├── Dockerfile # Slim Python image setup
-
-├── requirements.txt
-
-├── .dockerignore
-
-├── .gitignore
-
-└── README.md
-
-  
-  
   
 
 🧠 Customizing the Agent
