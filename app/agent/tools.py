@@ -1,4 +1,5 @@
 import os
+import base64
 from github import Github
 from langchain_core.tools import tool
 from dotenv import load_dotenv
@@ -17,7 +18,19 @@ def get_github_issue(repo_name: str, issue_number: int) -> str:
     try:
         repo = gh.get_repo(repo_name)
         issue = repo.get_issue(number=issue_number)
-        return f"Issue Title: {issue.title}\nIssue Body: {issue.body}"
+        labels = [label.name.lower() for label in issue.labels]
+
+        if "bug" not in labels:
+            return (
+                f"SCOPE EXCEPTION: Issue #{issue_number} is tagged as {labels}. "
+                f"It is NOT tagged as a 'bug'. You are restricted to bug fixes only. "
+                f"Do NOT call any more tools. Output exactly: 'Out of scope: Not a bug. Aborting.'"
+            )
+        content = f"Issue Title: {issue.title}\n"
+        content += f"labels: {labels}\n"
+        content += f"Issue Body: {issue.body}"
+        return content
+         
     except Exception as e:
         return f"Error fetching issue: {str(e)}"
     
@@ -27,6 +40,15 @@ def get_file_content(repo_name: str, file_path: str) -> str:
     try:
         repo = gh.get_repo(repo_name)
         file_content = repo.get_contents(file_path)
-        return file_content.decoded_content.decode("utf-8")
+
+        try:
+            return file_content.decoded_content.decode("utf-8")
+        except UnicodeDecodeError:
+            return (
+                f"Error: '{file_path}' appears to be a binary/compiled file "
+                f"(like .pkl, .png, .exe). You cannot read this file. "
+                f"Please explore other directories for readable source code."
+            )
+            
     except Exception as e:
         return f"Error fetching file content: {str(e)}"

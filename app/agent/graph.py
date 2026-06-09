@@ -1,23 +1,49 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+from langchain_core.messages import ToolMessage
 from app.agent.state import AgentState
 from app.agent.nodes import planner_node, coder_node
 from app.agent.tools import get_github_issue, get_file_content
+from app.agent.list_directory import list_github_directory
 
-tools = [get_github_issue, get_file_content]
+tools = [get_github_issue, get_file_content, list_github_directory]
 tool_node = ToolNode(tools)
+
 
 def router(state: AgentState):
     """
-    Checks the last message from the planner. If it contains tool calls, route to the tools.
-    If not, it means the planner has already provided the necessary context and we can move to the coder node.
+    Checks the last message from the planner. 
+    Routes to tools if native calls exist, catches LLM formatting hallucinations, 
+    and enforces a strict tool execution limit to prevent infinite loops.
     """
-
     messages = state.get("messages", [])
     last_message = messages[-1]
 
+    tool_run_count = 0
+    for m in messages:
+        if isinstance(m, dict) and m.get("type") == "tool":
+            tool_run_count += 1
+        elif hasattr(m, "type") and m.type == "tool":
+            tool_run_count += 1
+            
+    if tool_run_count >= 15:
+        return "coder"
+
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
+    if isinstance(last_message, dict) and last_message.get("tool_calls"):
+        return "tools"
+
+    
+    content = last_message.content if hasattr(last_message, "content") else last_message.get("content", "")
+    
+    
+    if "Context successfully gathered" in content:
+        return "coder"
+
+    if "Out of scope" in content or "Aborting" in content:
+        return END    
+   
     return "coder"
 
 workflow = StateGraph(AgentState)
@@ -26,10 +52,8 @@ workflow.add_node("planner", planner_node)
 workflow.add_node("tools", tool_node)
 workflow.add_node("coder", coder_node)
 
-#define the flow of the graph
 workflow.set_entry_point("planner")
 
-#from the planner we consult the router to see where to go next
 workflow.add_conditional_edges(
     "planner",
     router,
@@ -38,9 +62,7 @@ workflow.add_conditional_edges(
         "coder": "coder"
     }
 )
-#after tools execute, loop back to the planner to see if we need to fetch more context or if we have everything we need to generate the fix
 workflow.add_edge("tools", "planner")
-#once the coder node executes, we are done and can end the workflow
 workflow.add_edge("coder", END)
-#compile the graph into an executable agent application
+
 agent_app = workflow.compile()
