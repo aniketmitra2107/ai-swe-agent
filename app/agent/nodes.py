@@ -1,22 +1,17 @@
 import os
 import json
 import uuid
-from langchain_ollama import ChatOllama
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from app.agent.state import AgentState
 from app.agent.tools import get_github_issue, get_file_content
 from app.agent.list_directory import list_github_directory
+from app.agent.llm_utils import as_text, make_llm
 
 load_dotenv()
 
 
-llm = ChatOllama(
-    model="qwen2.5-coder:7b",
-    temperature=0,
-    num_ctx=16384,
-    base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
-)
+llm = make_llm()
 
 planner_llm = llm.bind_tools([get_github_issue, get_file_content, list_github_directory])
 
@@ -40,7 +35,7 @@ def planner_node(state: AgentState):
     response = planner_llm.invoke([system_prompt] + messages)
 
 
-    content_str = response.content.strip()
+    content_str = as_text(response.content).strip()
     if not getattr(response, "tool_calls", None):
         if content_str.startswith("{") and '"name"' in content_str and '"arguments"' in content_str:
             try:
@@ -61,9 +56,21 @@ def planner_node(state: AgentState):
 
     return {"messages": [response]}
 
+def _extract_file_target(messages):
+    """Recover repo_name / file_path from the get_file_content tool call args."""
+    repo_name, file_path = "", ""
+    for msg in messages:
+        for call in getattr(msg, "tool_calls", None) or []:
+            args = call.get("args", {}) if isinstance(call, dict) else {}
+            if call.get("name") == "get_file_content":
+                repo_name = args.get("repo_name", repo_name)
+                file_path = args.get("file_path", file_path)
+    return repo_name, file_path
+
+
 def coder_node(state: AgentState):
-    """Reads the gathered context and generates the actual code fix"""
-    messages = state.get("messages",[])
+    """Reads the gathered context and generates the actual code fix."""
+    messages = state.get("messages", [])
     issue_context = "No issue found in context."
     file_context = "No file found in context."
 
@@ -75,30 +82,51 @@ def coder_node(state: AgentState):
                 file_context = msg.content
 
     if file_context == "No file found in context.":
-        return {"final_fix": "Agent failed to locate the necessary file within the tool limit. No patch generated."}
+        return {"final_fix": "Agent failed to locate the necessary file within the tool limit. No patch generated.",
+                "status": "aborted"}
 
+    repo_name, file_path = _extract_file_target(messages)
 
-    system_prompt = SystemMessage(
+    # Inject feedback from a failed gate, if any.
+    feedback = ""
+    if state.get("verifier_feedback"):
+        feedback = (
+            "\n--- PREVIOUS ATTEMPT FAILED THE SYNTAX VERIFIER ---\n"
+            f"{state['verifier_feedback']}\n"
+            "Produce a corrected SEARCH/REPLACE block that fixes this.\n"
+        )
+    elif state.get("reviewer_feedback"):
+        feedback = (
+            "\n--- PREVIOUS ATTEMPT WAS REJECTED BY THE REVIEWER ---\n"
+            f"{state['reviewer_feedback']}\n"
+            "Produce a logically corrected SEARCH/REPLACE block that fully resolves the issue.\n"
+        )
+
+    system_prompt = HumanMessage(
         content=(
             "You are an expert, language-agnostic Senior Software Engineer. You do not explain yourself.\n"
-        "Review the issue below, then determine the exact lines of code that need to be changed to fix the bug.\n\n"
-        f"--- GITHUB ISSUE ---\n{issue_context}\n\n"
-        f"--- SOURCE CODE ---\n{file_context}\n\n"
-        "CRITICAL INSTRUCTION:\n"
-        "Do NOT rewrite the entire file. You must output a SEARCH/REPLACE block containing only the changed lines.\n"
-        "Format your response EXACTLY like this:\n"
-        "```\n"
-        "<<<<\n"
-        "    // original code as it currently exists\n"
-        "====\n"
-        "    // your new fixed code\n"
-        ">>>>\n"
-        "```\n"
-        "Only output the markdown block. Include a few unchanged context lines in the <<<< section so the exact location is clear."
+            "Review the issue below, then determine the exact lines of code that need to be changed to fix the bug.\n\n"
+            f"--- GITHUB ISSUE ---\n{issue_context}\n\n"
+            f"--- SOURCE CODE ---\n{file_context}\n"
+            f"{feedback}\n"
+            "CRITICAL INSTRUCTION:\n"
+            "Do NOT rewrite the entire file. You must output a SEARCH/REPLACE block containing only the changed lines.\n"
+            "Format your response EXACTLY like this:\n"
+            "```\n"
+            "<<<<\n"
+            "    // original code as it currently exists\n"
+            "====\n"
+            "    // your new fixed code\n"
+            ">>>>\n"
+            "```\n"
+            "Only output the markdown block. Include a few unchanged context lines in the <<<< section so the exact location is clear."
         )
     )
     response = llm.invoke([system_prompt])
     return {
-        "final_fix": response.content
+        "final_fix": as_text(response.content),
+        "fetched_code": file_context,
+        "repo_name": repo_name,
+        "file_path": file_path,
+        "coder_calls": state.get("coder_calls", 0) + 1,
     }
-        
