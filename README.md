@@ -1,192 +1,161 @@
-#  🤖 Local AI Software Engineer (SWE) Agent
+# 🤖 AI Software Engineer (SWE) Agent
 
-  
+An autonomous AI software engineering agent built with **LangGraph**. It navigates a real GitHub repository, locates the source of a bug, writes a surgical code patch, **verifies the patch is syntactically valid**, has a **reviewer confirm the fix is logically correct**, and only then opens a Pull Request.
 
-An autonomous, local-first AI software engineering agent built with **LangGraph** and **Ollama**. This agent can navigate a real-world GitHub repository, locate the source of a bug, write a surgical code patch, and automatically open a Pull Request—all powered by a local 7B LLM (Qwen 2.5 Coder).
+LLM inference runs through **[OpenRouter](https://openrouter.ai/)** (an OpenAI-compatible API), so you can point the agent at any hosted model — DeepSeek, Qwen Coder, Kimi, Claude, GPT, etc. — by changing a single environment variable.
 
-  
+## ✨ Features
 
-##  ✨ Features
-
-  
-
--  **Local-First & Private:** Uses Ollama to run the LLM locally. No code is sent to OpenAI or Anthropic.
-
--  **ReAct Orchestration:** Powered by a LangGraph state machine that acts, observes, and reasons through a repository.
-
--  **Smart Directory Traversal:** Navigates deeply nested repository structures using custom PyGithub tools.
-
--  **Fail-Fast Scope Bouncer:** Automatically rejects feature requests or enhancements, restricting execution exclusively to issues tagged with `bug` to save tokens and prevent hallucinations.
-
--  **"Clean Plate" Handoff:** Prevents context-window crashes by stripping out intermediate tool noise before handing the final context to the Coder node.
-
--  **Surgical Patching:** Uses the Aider-style `<<<< ==== >>>>` Search/Replace block format instead of rewriting entire files.
-
--  **Automated Pull Requests:** Branches the repository, applies the patch in memory, and opens a GitHub PR automatically.
-
--  **Fully Dockerized:** Runs in an isolated container to ensure environment consistency.
-
-  
+- **Model-Agnostic via OpenRouter:** Switch the underlying LLM with one env var (`OPENROUTER_MODEL`) — no code changes. The client is centralized in `app/agent/llm_utils.py`.
+- **ReAct Orchestration:** A LangGraph state machine that acts, observes, and reasons through a repository.
+- **Smart Directory Traversal:** Navigates deeply nested repository structures using custom PyGithub tools.
+- **Fail-Fast Scope Bouncer:** Restricts execution to issues tagged `bug`, rejecting feature requests to save tokens and prevent hallucinations.
+- **"Clean Plate" Handoff:** Strips intermediate tool noise before handing the final context to the Coder, preventing context-window bloat.
+- **Surgical Patching:** Uses the Aider-style `<<<< ==== >>>>` SEARCH/REPLACE format instead of rewriting whole files. Supports multiple blocks per patch and tolerates whitespace/indentation drift.
+- **Syntax Verifier:** Applies the patch in memory and checks it parses — deterministic `compile()` / `json.loads` for Python/JSON, with an LLM fallback for other languages. Broken syntax never reaches a PR.
+- **Logical Reviewer:** A second LLM pass confirms the patch actually resolves the issue before a PR is opened.
+- **Bounded Self-Correction:** Independent retry budgets for syntax fixes and logic rewrites, under a global ceiling — the Coder iterates on feedback without looping forever.
+- **Automated Pull Requests:** Branches the repo, commits the patched file, and opens a PR. If the reviewer can't be satisfied within budget, it opens a **draft PR flagged for human review** with the reviewer's objection embedded.
+- **Fully Dockerized:** Runs in an isolated container for environment consistency.
 
 ---
 
-  
-
-##  🏗️ Architecture
-
-  
+## 🏗️ Architecture
 
 The agent operates on a directed graph built with LangGraph:
 
-  
+1. **Planner Node:** The "eyes" of the agent. Uses native tool calling to fetch the GitHub issue, traverse directories, and read file contents.
+2. **Router (Circuit Breaker):** Ensures the Planner keeps making progress and cuts off the loop if it exceeds its tool "stamina" (15 tool calls).
+3. **Coder Node:** The "hands" of the agent. Receives a clean prompt with *only* the issue and the exact file content, and outputs a precise SEARCH/REPLACE patch. Re-runs with feedback when a gate rejects its work.
+4. **Verifier Node:** Applies the patch in memory and checks the result is syntactically valid.
+5. **Reviewer Node:** Judges whether the patched code logically resolves the issue.
+6. **PR Node:** The Git orchestrator. Branches the repo, commits the patched file, and opens a Pull Request (or a draft PR if the logic review was never satisfied).
 
-1.  **Planner Node:** The "eyes" of the agent. It uses native tool calling to fetch the GitHub issue, traverse directories, and read file contents.
+```
+Planner ─► Router ─► Tools ─┐
+   ▲                        │
+   └────────────────────────┘
+Router ─► Coder ─► Verifier ─► Reviewer ─► PR ─► ✅ Pull Request
+                     │            │
+              syntax fail    logic reject
+                     │            │
+              retry Coder    retry Coder      (within budget)
+                     │            │
+              budget spent   budget spent
+                     ▼            ▼
+               fail_syntax   📝 Draft PR (flagged for human review)
+```
 
-2.  **Router (Circuit Breaker):** Ensures the Planner is actually calling tools. It cuts off the loop if the agent gets stuck or exceeds its "stamina" (15 tool calls).
+**Retry budgets** (configured in `app/agent/graph.py`):
 
-3.  **Coder Node:** The "hands" of the agent. It receives a clean prompt containing *only* the issue and the exact file content, outputting a precise patch.
-
-4.  **PR Node:** The Git orchestrator. It parses the patch, clones the target repo, applies the fix, commits to a new branch, and opens a Pull Request.
-
-  
+| Constant | Default | Meaning |
+|---|---|---|
+| `MAX_SYNTAX_FIXES` | 3 | Coder retries allowed for syntax failures |
+| `MAX_LOGIC_FIXES` | 3 | Coder retries allowed for logic rejections |
+| `MAX_CODER_CALLS` | 8 | Global ceiling on total Coder invocations |
 
 ---
 
-  
+## 📋 Prerequisites
 
-##  📋 Prerequisites
+1. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** installed and running (for the containerized run).
+2. **An [OpenRouter API key](https://openrouter.ai/keys)** — the agent calls models through OpenRouter.
+3. **A GitHub Personal Access Token (PAT)** with `repo` (Read/Write) access, to fetch issues and open Pull Requests.
 
-  
+---
 
-Before running the agent, you need to set up your local environment:
+## ⚙️ Configuration
 
-  
+Create a `.env` file in the project root:
 
-1.  **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** installed and running.
+```ini
+OPENROUTER_API_KEY=sk-or-v1-your_key_here
+GITHUB_ACCESS_TOKEN=ghp_your_token_here
 
-2.  **[Ollama](https://ollama.com/)** installed and running on your host machine.
-
-3.  **Download the Model:** Open your terminal and pull the Qwen Coder model:
-
-```shell
-ollama run qwen2.5-coder:7b
+# Optional — override the defaults in app/agent/llm_utils.py
+OPENROUTER_MODEL=deepseek/deepseek-chat
+OPENROUTER_MAX_TOKENS=4096
 ```
 
-  
-GitHub Personal Access Token (PAT): You need a classic PAT with repo (Read/Write) access to fetch issues and open Pull Requests.
+`.env` is git-ignored and excluded from the Docker image, so your secrets are never committed or baked into a build. Docker Compose injects these variables into the container via `env_file`.
 
-  
+> **Tip:** `OPENROUTER_MAX_TOKENS` caps output tokens. Keep it modest (e.g. `4096`) — without a cap, OpenRouter reserves the model's full completion length and may reject the request if your credit balance can't cover the worst case.
 
-🚀 Quick Start (Docker)
+---
 
-The easiest and safest way to run the agent is using Docker Compose.
+## 🚀 Quick Start (Docker)
 
-  
+1. **Clone the repository:**
 
-1. Clone the repository:
+   ```shell
+   git clone https://github.com/aniketmitra2107/ai-swe-agent.git
+   cd ai-swe-agent
+   ```
 
-  
+2. **Create your `.env`** as described in [Configuration](#️-configuration).
 
-```shell
-git clone [https://github.com/aniketmitra2107/ai-swe-agent.git](https://github.com/aniketmitra2107/ai-swe-agent.git)
-cd ai-swe-agent
-```
+3. **Run the agent:**
 
-  
+   ```shell
+   docker compose up --build
+   ```
 
-2. Set your GitHub Token:
+The agent will spin up, connect to OpenRouter, traverse the target repository, and (on success) open a Pull Request. Watch the terminal logs to follow each node.
 
-Export your token to your terminal environment so Docker can securely pass it into the container.
+---
 
-Windows (PowerShell): `$env:GITHUB_TOKEN="ghp_your_token_here"`
-Mac/Linux: `export GITHUB_TOKEN="ghp_your_token_here"`
+## 💻 Local Setup (Without Docker)
 
-  
+1. **Create a virtual environment:**
 
-3. Run the Agent:
+   ```shell
+   python -m venv venv
+   source venv/bin/activate   # On Windows: .\venv\Scripts\activate
+   ```
 
-```shell
-docker-compose up --build
-```
+2. **Install dependencies:**
 
-  
+   ```shell
+   pip install -r requirements.txt
+   ```
 
-The agent will spin up, connect to your local Ollama instance, and begin executing the test graph. Watch the terminal logs as it traverses the repository and opens the PR!
+3. **Provide credentials** via a `.env` file (see [Configuration](#️-configuration)) — it's loaded automatically.
 
-  
+4. **Execute the test script:**
 
-💻 Local Setup (Without Docker)
+   ```shell
+   python tests/test_graph.py
+   ```
 
-If you prefer to run the agent directly on your host machine for debugging:
+---
 
-  
+## 🧠 Customizing the Agent
 
-1. Create a virtual environment:
+**Target a different repo/issue:** open `tests/test_graph.py` and edit the initial message payload:
 
-  
-```shell
-python -m venv venv
-source venv/bin/activate # On Windows use: .\venv\Scripts\activate
-```
-  
-
-2. Install dependencies:
-
-  
-```shell
-pip install -r requirements.txt
-```
-  
-
-3. Set environment variables:
-```shell
-export GITHUB_ACCESS_TOKEN="ghp_your_token_here"
-```
-  
-
-4. Execute the test script:
-
-  
-```shell
-python tests/test_graph.py
-```
-  
-  
-
-🧠 Customizing the Agent
-
-To test the agent against a different repository or bug:
-
-  
-
-1. Open `tests/test_graph.py`
-
-2. Update the initial message payload with the target repository and issue number:
-
-  
-```shell
+```python
 initial_state = {
     "messages": [
-        HumanMessage(content="Fix bug in repository 'your-username/your-repo' for issue #123.")
-    ]
+        HumanMessage(content="Look up issue 1 in the repo your-username/your-repo. ...")
+    ],
+    # ... remaining state fields
 }
 ```
-  
 
-Note: Make sure the repository actually has an issue with the label bug, otherwise the agent's Scope Bouncer will immediately abort the execution.
+**Switch the LLM:** set `OPENROUTER_MODEL` in `.env` (e.g. `deepseek/deepseek-chat`, `qwen/qwen3-coder`, `anthropic/claude-sonnet-4-6`). Browse options on the [OpenRouter models page](https://openrouter.ai/models) — prefer models that advertise tool/function calling, since the Planner relies on it.
 
-  
+> **Note:** The target repository must have an issue labeled `bug`, or the Scope Bouncer will abort immediately.
 
-⚠️ Limitations & Future Work
+---
 
-- Hardware Limits: A 16k context window is required for reading large files. Ensure you have sufficient RAM/VRAM to run 7B parameter models locally. If CUDA crashes, lower num_ctx in nodes.py.
- 
-- Single-File Bias: Currently, the agent is optimized to find and patch a single file per execution.
- 
-- Execution Verification: Future iterations will include a Verifier Node that runs the repository's test suite (pytest, npm test) inside an isolated ephemeral container before opening a PR.
+## ⚠️ Limitations & Future Work
 
-  
+- **Single-File Bias:** The agent is currently optimized to locate and patch a single file per execution.
+- **Syntax ≠ Behavior:** The Verifier confirms the patch *parses*, but does not run the repository's test suite. A future iteration will execute `pytest` / `npm test` inside an ephemeral container before opening a PR.
+- **API Cost & Rate Limits:** Running through hosted models incurs per-token cost (and free tiers impose request limits). A full run makes ~8–10 model calls; choose your model and credit budget accordingly.
 
-📜 License
+---
+
+## 📜 License
 
 This project is licensed under the MIT License.
