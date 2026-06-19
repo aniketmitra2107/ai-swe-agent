@@ -2,9 +2,7 @@ PyGithub
 langchain-core
 python-dotenv
 langgraph
-langchain-google-genai
 langchain-openai
 fastapi
 uvicorn
 docker
-langchain_ollama

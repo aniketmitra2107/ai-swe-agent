@@ -1,14 +1,8 @@
-version: '3.8'
-
 services:
   agent:
     build: .
     container_name: ai-swe-agent
-    environment:
-      -GITHUB_ACCESS_TOKEN: ${GITHUB_ACCESS_TOKEN}
-      -OLLAMA_BASE_URL: http://host.docker.internal:11434
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
     volumes:
       - .:/app
